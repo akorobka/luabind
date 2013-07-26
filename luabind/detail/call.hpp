@@ -138,17 +138,19 @@ inline int sum_scores(int const* first, int const* last)
             n, BOOST_PP_CAT(iter,BOOST_PP_DEC(n)), first) \
     >::type
 
-#  define LUABIND_INVOKE_NEXT_INDEX(n) \
+#  define LUABIND_INVOKE_NEXT_INDEX(nargs, n) \
     BOOST_PP_IF( \
         n \
       , BOOST_PP_CAT(index,BOOST_PP_DEC(n)) + \
-            BOOST_PP_CAT(c,BOOST_PP_DEC(n)).consumed_args() \
+            BOOST_PP_CAT(c,BOOST_PP_DEC(n)).consumed_args(nargs, \
+	 	 	   BOOST_PP_CAT(index,BOOST_PP_DEC(n)) - 1) \
       , 1 \
     )
 
-#  define LUABIND_INVOKE_COMPUTE_ARITY(n) + BOOST_PP_CAT(c,n).consumed_args()
+#  define LUABIND_INVOKE_COMPUTE_ARITY(nargs, n) + \
+		BOOST_PP_CAT(c,n).consumed_args(nargs, BOOST_PP_CAT(index,n) - 1)
 
-#  define LUABIND_INVOKE_DECLARE_CONVERTER(n) \
+#  define LUABIND_INVOKE_DECLARE_CONVERTER(nargs, n) \
     typedef LUABIND_INVOKE_NEXT_ITER(n) BOOST_PP_CAT(iter,n); \
     typedef typename mpl::deref<BOOST_PP_CAT(iter,n)>::type \
         BOOST_PP_CAT(a,n); \
@@ -156,7 +158,7 @@ inline int sum_scores(int const* first, int const* last)
         BOOST_PP_CAT(p,n); \
     typename mpl::apply_wrap2< \
         BOOST_PP_CAT(p,n), BOOST_PP_CAT(a,n), lua_to_cpp>::type BOOST_PP_CAT(c,n); \
-    int const BOOST_PP_CAT(index,n) = LUABIND_INVOKE_NEXT_INDEX(n);
+    int const BOOST_PP_CAT(index,n) = LUABIND_INVOKE_NEXT_INDEX(nargs, n);
 
 #  define LUABIND_INVOKE_COMPUTE_SCORE(n)                                   \
     , BOOST_PP_CAT(c,n).match(                                              \
@@ -227,21 +229,21 @@ invoke_normal
         result_policy, result_type, cpp_to_lua>::type result_converter;
 # endif
 
+    int const arguments = lua_gettop(L);
+
 # if N > 0
-#  define BOOST_PP_LOCAL_MACRO(n) LUABIND_INVOKE_DECLARE_CONVERTER(n)
+#  define BOOST_PP_LOCAL_MACRO(n) LUABIND_INVOKE_DECLARE_CONVERTER(arguments, n)
 #  define BOOST_PP_LOCAL_LIMITS (0,N-1)
 #  include BOOST_PP_LOCAL_ITERATE()
 # endif
 
     int const arity = 0
 # if N > 0
-#  define BOOST_PP_LOCAL_MACRO(n) LUABIND_INVOKE_COMPUTE_ARITY(n)
+#  define BOOST_PP_LOCAL_MACRO(n) LUABIND_INVOKE_COMPUTE_ARITY(arguments, n)
 #  define BOOST_PP_LOCAL_LIMITS (0,N-1)
 #  include BOOST_PP_LOCAL_ITERATE()
 # endif
     ;
-
-    int const arguments = lua_gettop(L);
 
     int score = -1;
 

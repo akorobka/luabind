@@ -31,37 +31,97 @@
 #include <boost/mpl/apply_wrap.hpp>
 #include <boost/mpl/if.hpp>             // for if_
 #include <boost/type_traits/is_same.hpp>  // for is_same
+#include <boost/mpl/has_xxx.hpp>
+#include <boost/mpl/eval_if.hpp>
+#include <boost/mpl/identity.hpp>
+#include <boost/mpl/and.hpp>
 
 namespace luabind { namespace detail {
 
+	BOOST_MPL_HAS_XXX_TRAIT_DEF(first_type)
+	BOOST_MPL_HAS_XXX_TRAIT_DEF(second_type)
+
 	namespace mpl = boost::mpl;
+
+	template <typename T> struct has_compound_value_type :
+	        mpl::and_<has_first_type<typename T::value_type>,
+			  has_second_type<typename T::value_type> > {
+	};
 
 	template<class Policies>
 	struct container_converter_lua_to_cpp
 	{
-        int consumed_args(...) const
-        {
-            return 1;
-        }
+		typedef typename find_conversion_policy<1, Policies>::type converter_policy;
 
-        template<class T>
-		T apply(lua_State* L, by_const_reference<T>, int index)
+		template <typename T> struct default_adapter
 		{
 			typedef typename T::value_type value_type;
 
-			typedef typename find_conversion_policy<1, Policies>::type converter_policy;
 			typename mpl::apply_wrap2<converter_policy,value_type,lua_to_cpp>::type converter;
 
-			T container;
+			T container_;		
+
+			void push_top(lua_State* L) {
+				if (converter.match(L, LUABIND_DECORATE_TYPE(value_type), -1) >= 0)
+					container_.push_back(converter.apply(L, LUABIND_DECORATE_TYPE(value_type), -1));
+				else
+					throw std::runtime_error("Container is incompatible with argument data type");
+			}
+
+			operator T() {
+				return container_;
+			}
+		};
+
+		template <typename T> struct compound_value_adapter
+		{
+			typedef typename T::value_type value_type;
+
+			typedef typename value_type::first_type first_type;
+			typedef typename value_type::second_type second_type;
+
+			typename mpl::apply_wrap2<converter_policy,first_type,lua_to_cpp>::type converter_key;
+			typename mpl::apply_wrap2<converter_policy,second_type,lua_to_cpp>::type converter_value;
+
+			T container_;
+
+			void push_top(lua_State* L) {
+				if (converter_key.match(L, LUABIND_DECORATE_TYPE(first_type), -2) < 0)
+					throw std::runtime_error("Container key type is incompatible with table entry key");
+
+				if (converter_value.match(L, LUABIND_DECORATE_TYPE(second_type), -1) < 0)
+					throw std::runtime_error("Container value type is incompatible with table entry value");
+
+				container_.insert(value_type(converter_key.apply(L, LUABIND_DECORATE_TYPE(first_type), -2),
+							     converter_value.apply(L, LUABIND_DECORATE_TYPE(second_type), -1)));
+			}
+
+			operator T() {
+				return container_;
+			}
+		};
+
+		int consumed_args(...) const
+		{
+			return 1;
+		}
+
+		template<class T>
+		T apply(lua_State* L, by_const_reference<T>, int index)
+		{
+			typename mpl::eval_if<has_compound_value_type<T>,
+					mpl::identity<compound_value_adapter<T> >,
+					mpl::identity<default_adapter<T> >
+			>::type adapter;
 
 			lua_pushnil(L);
 			while (lua_next(L, index))
 			{
-				container.push_back(converter.apply(L, LUABIND_DECORATE_TYPE(value_type), -1));
+				adapter.push_top(L);
 				lua_pop(L, 1); // pop value
 			}
 
-			return container;
+			return adapter;
 		}
 
 		template<class T>
@@ -83,23 +143,52 @@ namespace luabind { namespace detail {
 	template<class Policies>
 	struct container_converter_cpp_to_lua
 	{
-		template<class T>
-		void apply(lua_State* L, const T& container)
+		typedef typename find_conversion_policy<1, Policies>::type converter_policy;
+
+		template <typename T> struct default_adapter
 		{
 			typedef typename T::value_type value_type;
 
-			typedef typename find_conversion_policy<1, Policies>::type converter_policy;
-			typename mpl::apply_wrap2<converter_policy,value_type,lua_to_cpp>::type converter;
+			typename mpl::apply_wrap2<converter_policy,value_type,cpp_to_lua>::type converter;
+
+			void convert(lua_State* L, int index, const value_type& v) {
+				converter.apply(L, v);
+				lua_rawseti(L, -2, index);
+			}
+		};
+
+		template <typename T> struct compound_value_adapter
+		{
+			typedef typename T::value_type value_type;
+
+			typedef typename value_type::first_type first_type;
+			typedef typename value_type::second_type second_type;
+
+			typename mpl::apply_wrap2<converter_policy,first_type,cpp_to_lua>::type converter_key;
+			typename mpl::apply_wrap2<converter_policy,second_type,cpp_to_lua>::type converter_value;
+
+			void convert(lua_State* L, int index, const value_type& v) {
+				converter_key.apply(L, v.first);
+				converter_value.apply(L, v.second);
+				lua_settable(L, -3);
+			}
+		};
+
+		template<class T>
+		void apply(lua_State* L, const T& container)
+		{
+			typename mpl::eval_if<has_compound_value_type<T>,
+					mpl::identity<compound_value_adapter<T> >,
+					mpl::identity<default_adapter<T> >
+			>::type adapter;
 
 			lua_newtable(L);
 
 			int index = 1;
 
-			for (typename T::const_iterator i = container.begin(); i != container.end(); ++i)
+			for (typename T::const_iterator it = container.begin(); it != container.end(); ++it)
 			{
-				converter.apply(L, *i);
-				lua_rawseti(L, -2, index);
-				++index;
+				adapter.convert(L, index++, *it);
 			}
 		}
 	};
@@ -118,7 +207,7 @@ namespace luabind { namespace detail {
 		template<class T, class Direction>
 		struct apply
 		{
-			typedef typename boost::mpl::if_<boost::is_same<lua_to_cpp, Direction>
+			typedef typename mpl::if_<boost::is_same<lua_to_cpp, Direction>
 				, container_converter_lua_to_cpp<Policies>
 				, container_converter_cpp_to_lua<Policies>
 			>::type type;
